@@ -10,14 +10,12 @@ const unsigned char MY_ADDRESS = 0x9;
 #define SZ 32
 #define NSZ 24
 
+/*
+Initialization of data structure 
+*/
 byte Nodes[NSZ] = {MY_ADDRESS,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 __uint24 OneHops[NSZ] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 byte Timestamps[NSZ] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
-byte BroadcastNodes[NSZ] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
-__uint24 SequenceMap[256];
-int distinctReceivedCount = 0;
-int relayedCount = 0;
-byte broadcastCount = 0;
 
 /*
   prints one and two hop neighborhood information to serial monitor
@@ -127,103 +125,6 @@ void buildHello(byte pkt[]) {
 }
 
 /*
-  formats broadcast packets with incrementing sequence number
-*/
-void buildBroadcast(byte pkt[]) {
-  pkt[0] = 0x30;
-  pkt[1] = MY_ADDRESS;
-  pkt[2] = 0x0;
-  pkt[3] = broadcastCount;
-  pkt[4] = MY_ADDRESS;
-  pkt[5] = 0x0;
-  broadcastCount++;
-}
-
-void printStats() {
-  Serial.print(F("Total distinct broadcast messages received: "));
-  Serial.println(distinctReceivedCount);
-  Serial.print(F("Total number of broadcast messages relayed: "));
-  Serial.println(relayedCount);
-}
-
-/*
-  checks incoming packets against previously received broadcast packets
-*/
-bool uniqueBroadcast(byte pkt[]){
-  for(int i = 1; i < NSZ; i++) {
-    if (BroadcastNodes[i] == pkt[1]) {
-      if (SequenceMap[pkt[3]] >> i & 1 == 1) {
-        return false;
-      } else {
-        SequenceMap[pkt[3]] |= (1 << i);
-        distinctReceivedCount++;
-        return true;
-      }
-    }
-  }
-  for (int i = 1; i < NSZ; i++) {
-    if (BroadcastNodes[i] == 0) {
-      BroadcastNodes[i] = pkt[1];
-      SequenceMap[pkt[3]] |= (1 << i);
-      distinctReceivedCount++;
-      return true;
-    }
-  }
-  Serial.println(F("Unique broadcast error"));
-  return false;
-}
-
-/*
-  checks if incoming coverages set is less then or equal to two hop neighborhood
-  any nodes existing in two neighborhood that are not yet covered will be appended to coverage set and broadcast retransmitted
-*/
-bool isCovered(byte pkt[]) {
-  byte toAppend[NSZ];
-  byte appendCount = 0;
-  for(int i = 1; i < NSZ; i++){
-    for(int j = 0; j < pkt[5]; j++){
-      if(Nodes[i] == pkt[6 + j]) {
-        break;
-      } else {
-        toAppend[appendCount] = Nodes[i];
-        appendCount++;
-      }
-    }
-  }
-  if(appendCount == 0) {
-    return true;
-  } else {
-    for(int i = 0; i < appendCount; i++) {
-    pkt[5 + pkt[5]] = toAppend[appendCount];
-  }
-  pkt[5] += appendCount;
-    return false;
-  }
-}
-
-/*
-  determines if broadcast is to be retransmitted
-  transmits broadcast with updated sender address and coverage set
-*/
-void relay(byte pkt[]) {
-  if (uniqueBroadcast(pkt) && !isCovered(pkt)) {
-    radio.openWritingPipe(addr);
-    radio.setPALevel(RF24_PA_MIN);
-    radio.stopListening();
-    radio.setAutoAck(false);
-    pkt[4] = MY_ADDRESS;
-    if (radio.write(pkt, SZ)) {
-      Serial.println(F("Relay sent"));
-      relayedCount++;
-    } else {
-      Serial.println(F("Relay error"));
-    }
-  } else {
-    Serial.println(F("Relay denied"));
-  }
-}
-
-/*
   delay functionality for coroutines
 */
 class ActionDelay {
@@ -281,32 +182,6 @@ class Hello : public ActionDelay {
 };
 
 /*
-  transmits broadcast packets with set delay
-*/
-class Broadcast : public ActionDelay {
-  public:
-    Broadcast(int arg) {
-      _delay = 10000;
-    }
-
-    void action() {
-
-      radio.openWritingPipe(addr);
-      radio.setPALevel(RF24_PA_MIN);
-      radio.stopListening();
-      radio.setAutoAck(false);
-      byte pkt[SZ];
-      buildBroadcast(pkt);
-      if (radio.write(pkt, SZ)) {
-        Serial.println(F("Broadcast sent"));
-      } else {
-        Serial.println(F("Broadcast error"));
-      }
-      printStats();
-    }
-};
-
-/*
   listens and parses incoming packets
 */
 class Listener : public Coroutine {
@@ -328,11 +203,7 @@ class Listener : public Coroutine {
             Serial.print(F("Received hello: "));
             Serial.println(packet[1]);
             insert(packet);
-          }/* else if (packet[0] >> 4 == 3) {
-            Serial.print(F("Received broadcast: "));
-            Serial.println(packet[1]);
-            relay(packet);
-          }*/
+          }
         } else {
           Serial.print(F("radio unavailable"));
         }
@@ -361,11 +232,9 @@ class ScheduleAction: public Coroutine {
 };
 
 Hello hello(1);
-Broadcast broadcast(1);
 OneHop oneHop(1);
 Listener listener();
 ScheduleAction h(&hello);
-ScheduleAction b(&broadcast);
 ScheduleAction o(&oneHop);
 
 void setup()
